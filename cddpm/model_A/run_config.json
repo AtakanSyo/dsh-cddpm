@@ -1,0 +1,22 @@
+{
+  "variant": "A",
+  "dataset": "reflex_data_8_corrected_camera_grid",
+  "image_size": 48,
+  "batch_size": 256,
+  "num_workers": 8,
+  "seed": 42,
+  "n_epochs": 20000,
+  "lr": 0.0001,
+  "grad_clip": 1.0,
+  "lambda_noise": 1.0,
+  "lambda_label": 0.05,
+  "lambda_aux": 0.0001,
+  "snr_gamma": 5.0,
+  "checkpoint_every": 1000,
+  "log_every": 200,
+  "preview_every": 30,
+  "preview_images": 16,
+  "preview_ddim_steps": 2,
+  "use_anscombe": false,
+  "use_aux_loss": false
+}

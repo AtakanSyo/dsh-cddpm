@@ -5,6 +5,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+from .heatmaps import JOURNAL_RC, _latex_sci
+
 PIXEL_SCALE_ARCSEC = 43.2
 
 
@@ -383,3 +385,128 @@ def _photon_totals_diff_plot(
         "percent_difference": pct_diff,
         "diff_image": diff_img,
     }
+
+
+def photon_total_heatmap(
+    npz_path: str,
+    *,
+    decimals: int = 6,
+    cmap: str = "RdBu_r",   # same default as plot_map
+    log_norm: bool = False,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    figsize=None,
+    font_size: int = 11,
+    x_display_scale: float = 1e-4,
+    tick_stride: int = 1,
+    title: str = "",
+    show: bool = True,
+):
+    """
+    Plot a heatmap of total photon counts (sum of all pixels, per matrix)
+    over the (x, nH) grid stored in a single .npz archive (as produced by
+    save_npy_to_npz, keyed by "xs"/"nHs"/"mats" -- the same archives
+    compare_npz_by_params / error_heatmap_between_npz / plot_matrix_grid
+    read).
+
+    Cells for (x, nH) combinations present in the archive's unique axis
+    values but missing an actual matrix are shown in grey with a "?"
+    marker, same convention as plot_matrix_grid.
+
+    Returns (totals, x_vals, nH_vals): totals has shape (len(nH_vals),
+    len(x_vals)), NaN for missing cells.
+    """
+    with np.load(npz_path) as data:
+        xs = np.round(data["xs"].astype(float), decimals)
+        nHs = np.round(data["nHs"].astype(float), decimals)
+        mats = data["mats"]
+
+    if len(mats) == 0:
+        raise ValueError("No matrices found in NPZ archive.")
+
+    x_vals = np.unique(xs)
+    nH_vals = np.unique(nHs)
+    ix_map = {float(v): i for i, v in enumerate(x_vals)}
+    inh_map = {float(v): i for i, v in enumerate(nH_vals)}
+
+    totals = np.full((len(nH_vals), len(x_vals)), np.nan)
+    for x_val, nH_val, mat in zip(xs, nHs, mats):
+        mat2d = np.squeeze(np.asarray(mat, dtype=np.float64))
+        row = inh_map[float(nH_val)]
+        col = ix_map[float(x_val)]
+        totals[row, col] = float(np.nansum(mat2d))
+
+    if not show:
+        return totals, x_vals, nH_vals
+
+    finite = np.isfinite(totals)
+    if not finite.any():
+        raise RuntimeError("No finite photon totals to plot.")
+
+    res_vmin = float(np.nanmin(totals)) if vmin is None else vmin
+    res_vmax = float(np.nanmax(totals)) if vmax is None else vmax
+
+    with plt.rc_context(JOURNAL_RC):
+        fig, ax = plt.subplots(figsize=figsize or (8, 8))
+
+        cmap_obj = plt.get_cmap(cmap).copy()
+        cmap_obj.set_bad("lightgrey")
+
+        if log_norm:
+            from matplotlib.colors import LogNorm
+
+            if res_vmin <= 0.0:
+                raise ValueError(
+                    "vmin must be strictly positive when log_norm=True."
+                )
+            im = ax.imshow(
+                np.ma.masked_invalid(totals),
+                origin="upper", aspect="auto", cmap=cmap_obj,
+                norm=LogNorm(vmin=res_vmin, vmax=res_vmax),
+                interpolation="nearest",
+            )
+        else:
+            im = ax.imshow(
+                np.ma.masked_invalid(totals),
+                origin="upper", aspect="auto", cmap=cmap_obj,
+                vmin=res_vmin, vmax=res_vmax,
+                interpolation="nearest",
+            )
+
+        for row in range(len(nH_vals)):
+            for col in range(len(x_vals)):
+                if finite[row, col]:
+                    continue
+                ax.text(
+                    col, row, "?",
+                    color="black", ha="center", va="center",
+                    fontsize=max(8, int(font_size * 0.85)), fontweight="bold",
+                )
+
+        xticks = np.arange(len(x_vals))
+        yticks = np.arange(len(nH_vals))
+        ax.set_xticks(xticks[::tick_stride])
+        ax.set_xticklabels(
+            [f"{v * x_display_scale:.4f}" for v in x_vals[::tick_stride]],
+            rotation=45, ha="right", fontsize=font_size - 1,
+        )
+        ax.set_yticks(yticks[::tick_stride])
+        ax.set_yticklabels(
+            [_latex_sci(v) for v in nH_vals[::tick_stride]], fontsize=font_size - 1,
+        )
+        ax.tick_params(axis="both", which="both", length=0)
+
+        ax.set_xlabel(r"$x$", fontsize=font_size)
+        ax.set_ylabel(r"$N_\mathrm{H}$ [cm$^{-2}$]", fontsize=font_size)
+        if title:
+            ax.set_title(title, fontsize=font_size, pad=8)
+
+        cbar = fig.colorbar(im, ax=ax, pad=0.02)
+        cbar.set_label("Total photon count", fontsize=font_size)
+        cbar.ax.tick_params(direction="in", length=3)
+        cbar.outline.set_linewidth(0.8)
+
+        fig.tight_layout()
+        plt.show()
+
+    return totals, x_vals, nH_vals

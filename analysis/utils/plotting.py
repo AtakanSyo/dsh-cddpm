@@ -6,7 +6,9 @@ import math
 from pathlib import Path
 from typing import Optional
 from matplotlib.lines import Line2D
-from .error_functions import radial_reduced_chi2_area2_bin_filtered
+from matplotlib.colors import TwoSlopeNorm
+from .error_functions import radial_reduced_chi2_area2_bin_filtered, _call_chi2_pair
+from .heatmaps import JOURNAL_RC, _latex_sci
 
 def _load_matrix(npz_path: str, x: float, nH: float, *, abs_tol: float = 1e-6):
     data = np.load(npz_path)
@@ -24,10 +26,6 @@ def _load_matrix(npz_path: str, x: float, nH: float, *, abs_tol: float = 1e-6):
         data.close()
 
     raise ValueError(f"Matrix with x={x}, nH={nH} not found in {npz_path}")
-
-
-
-
 
 
 def plot_mean_error_from_heatmap(
@@ -755,6 +753,136 @@ def collect_topk_matches_bray_curtis(
     return result, plot_data
 
 
+def collect_topk_matches_chi2(
+    model_npz: str,
+    data_npz: str,
+    *,
+    decimals: int = 6,
+    top_k: int = 5,
+    show: bool = True,
+    err_kwargs=None,
+):
+    """
+    Same interface as collect_topk_matches_bray_curtis but ranks pairs using
+    radial_reduced_chi2_area2_bin_filtered (radial reduced chi-squared)
+    instead of the Bray-Curtis dissimilarity. Lower chi-squared still means
+    a better match, so the ranking/CMC logic is unchanged.
+
+    err_kwargs is forwarded to radial_reduced_chi2_area2_bin_filtered, e.g.
+    {"n_annuli": 24, "pixel_scale_arcsec": 43.2, "bin_filter": 10.0,
+    "use_N": True, "Fano_Data": 1.0, "Fano_Model": 1.0, "V": None}.
+    """
+    if top_k <= 0:
+        raise ValueError("top_k must be positive")
+
+    m = np.load(model_npz)
+    d = np.load(data_npz)
+
+    xs_m = np.round(m["xs"].astype(float), decimals)
+    nHs_m = np.round(m["nHs"].astype(float), decimals)
+    mats_m = m["mats"]
+
+    xs_d = np.round(d["xs"].astype(float), decimals)
+    nHs_d = np.round(d["nHs"].astype(float), decimals)
+    mats_d = d["mats"]
+
+    if mats_m.ndim != 3 or mats_d.ndim != 3:
+        raise ValueError("Expected mats_* to be (N,H,W) arrays.")
+    Hm, Wm = mats_m.shape[-2:]
+    Hd, Wd = mats_d.shape[-2:]
+    if (Hm, Wm) != (Hd, Wd):
+        raise ValueError(f"Model and data matrix sizes differ: model {(Hm, Wm)} vs data {(Hd, Wd)}")
+
+    metric_kwargs = dict(err_kwargs or {})
+
+    errs = np.empty((len(xs_d), len(xs_m)), dtype=np.float64)
+
+    for j in range(len(xs_m)):
+        model_mat = np.squeeze(mats_m[j]).astype(np.float64)
+        for i in range(len(xs_d)):
+            data_mat = np.squeeze(mats_d[i]).astype(np.float64)
+            if data_mat.shape != model_mat.shape:
+                raise ValueError(f"Shape mismatch at data idx {i}, model idx {j}")
+            try:
+                errs[i, j] = radial_reduced_chi2_area2_bin_filtered(
+                    data_mat,
+                    model_mat,
+                    **metric_kwargs,
+                )
+            except RuntimeError:
+                # e.g. the fitted normalization hit the optimizer's upper
+                # bound for a badly mismatched pair; treat as "no match".
+                errs[i, j] = np.nan
+
+    key_to_idx_data = {(float(x), float(nH)): idx for idx, (x, nH) in enumerate(zip(xs_d, nHs_d))}
+    true_ranks = np.full(len(xs_m), np.nan)
+    order = np.argsort(errs, axis=0)
+
+    result = []
+    for j in range(len(xs_m)):
+        top_data_idx = order[: min(top_k, order.shape[0]), j]
+        matches = [
+            {
+                "x": float(xs_d[i]),
+                "nH": float(nHs_d[i]),
+                "error": float(errs[i, j]),
+            }
+            for i in top_data_idx
+        ]
+
+        key = (float(xs_m[j]), float(nHs_m[j]))
+        if key in key_to_idx_data:
+            true_i = key_to_idx_data[key]
+            col_order = order[:, j]
+            pos = np.where(col_order == true_i)[0]
+            if pos.size:
+                rank_pos = int(pos[0])
+                true_ranks[j] = rank_pos + 1
+                if rank_pos < len(matches):
+                    matches[rank_pos]["is_correct_match"] = True
+
+        result.append(
+            {
+                "model_x": float(xs_m[j]),
+                "model_nH": float(nHs_m[j]),
+                "matches": matches,
+                "true_match_rank": None if not np.isfinite(true_ranks[j]) else int(true_ranks[j]),
+            }
+        )
+
+    finite = np.isfinite(true_ranks)
+    plot_data = None
+    if finite.any():
+        ranks = true_ranks[finite]
+        max_rank = min(len(xs_d), top_k)
+        ks = np.arange(1, max_rank + 1)
+        cmc = np.array([(ranks <= k).mean() for k in ks])
+        plot_data = {
+            "ks": ks,
+            "cmc": cmc,
+            "max_rank": max_rank,
+            "num_models": int(finite.sum()),
+        }
+
+        if show:
+            print("\nIdentification rate for first 10 ranks (chi2):")
+            for idx in range(min(10, len(cmc))):
+                print(f"  Rank ≤ {idx + 1}: {cmc[idx]:.4f}")
+
+            plt.figure(figsize=(6, 4))
+            plt.plot(ks, cmc, marker="o")
+            plt.xlabel("Rank k")
+            plt.ylabel("Identification rate")
+            plt.title("CMC Curve • Radial Reduced Chi2")
+            plt.grid(True, linestyle="--", alpha=0.4)
+            plt.xlim(1, max_rank)
+            plt.tight_layout()
+            plt.show()
+    else:
+        if show:
+            print("No overlapping (x, nH) pairs to compute CMC curve.")
+
+    return result, plot_data
 
 
 def plot_bin_errors_for_pair(
@@ -1776,3 +1904,759 @@ def plot_model_fano_overlay(
 
     print(f"Global mean Fano  unweighted = {gmean:.4f}   weighted = {gmean_w:.4f}")
     return fig, ax
+"""
+Exact vectorized equivalent of radial_reduced_chi2_area2_bin_filtered, for the
+all-pairs identification / CMC experiment.
+
+The scalar function's chi2 reduces algebraically to raw counts:
+
+    Ab^2 * (mu_d - N mu_m)^2 / sig2   with   mu = S / Ab
+      =>  (S_d - N S_m)^2 / (F_d S_d + N^2 F_m V_m)
+
+so pixel_scale_arcsec cancels and never affects the returned value.
+
+Masking is data-only (S_data > bin_filter), so the valid-annulus set depends on
+the gallery image alone -- shape (N_d, A), broadcast across models.
+
+    dof = n_valid - 1  if use_N else n_valid
+
+use_N=False is exact to machine precision.
+use_N=True uses a vectorized golden-section search reproducing scipy's bounded
+minimisation over the same interval; agreement ~1e-8, and the upper-bound
+RuntimeError is reproduced as NaN plus a count.
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+GOLDEN_INV = (np.sqrt(5.0) - 1.0) / 2.0
+
+
+# ----------------------------------------------------------------------
+# binning -- matches edges=linspace(0, r.max(), A+1); digitize(right=False)-1
+# ----------------------------------------------------------------------
+
+def annulus_matrix(H, W, n_annuli):
+    cy, cx = (H - 1) / 2.0, (W - 1) / 2.0
+    yy, xx = np.indices((H, W))
+    r = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2).ravel()
+    edges = np.linspace(0.0, r.max(), n_annuli + 1)
+    bins = np.clip(np.digitize(r, edges, right=False) - 1, 0, n_annuli - 1)
+
+    B = np.zeros((n_annuli, H * W), dtype=np.float64)
+    B[bins, np.arange(H * W)] = 1.0
+    return B, B.sum(axis=1)
+
+
+def profiles(mats, B):
+    """(N,H,W) -> (N,A) annular sums, one matmul."""
+    mats = np.asarray(mats, dtype=np.float64)
+    if np.any(mats < 0):
+        raise ValueError("negative counts present")
+    return mats.reshape(mats.shape[0], -1) @ B.T
+
+
+# ----------------------------------------------------------------------
+# chi2 over all pairs
+# ----------------------------------------------------------------------
+
+def chi2_matrix(Sd, Sm, *, Vm=None, bin_filter=10.0, use_N=False,
+                Fano_Data=1.0, Fano_Model=1.0, chunk=32, gs_iters=70):
+    """
+    Sd (N_d, A) gallery/data profiles, Sm (N_m, A) probe/model profiles.
+    Vm (N_m, A) optional model variance profiles; defaults to Sm (Poisson).
+    Returns errs (N_d, N_m) reduced chi2, plus a diagnostics dict.
+    """
+    Sd = np.asarray(Sd, float)
+    Sm = np.asarray(Sm, float)
+    Vm = Sm if Vm is None else np.asarray(Vm, float)
+
+    mask = Sd > bin_filter                      # (N_d, A) -- data-only
+    n_valid = mask.sum(axis=1)                  # (N_d,)
+    dof = n_valid - 1 if use_N else n_valid
+
+    N_d, N_m = Sd.shape[0], Sm.shape[0]
+    errs = np.full((N_d, N_m), np.nan)
+    n_bound_hits = 0
+
+    md = mask[:, None, :]                       # (N_d, 1, A)
+    for s in range(0, N_m, chunk):
+        e = min(s + chunk, N_m)
+        d = Sd[:, None, :]                      # (N_d, 1, A)
+        m = Sm[None, s:e, :]                    # (1, c, A)
+        v = Vm[None, s:e, :]
+
+        def chi2_of(N):                         # N broadcastable to (N_d,c,1)
+            den = Fano_Data * d + (N ** 2) * Fano_Model * v
+            num = (d - N * m) ** 2
+            return np.where(md & (den > 0), num / np.where(den > 0, den, 1.0),
+                            0.0).sum(-1)
+
+        if use_N:
+            dsum = (d * md).sum(-1)                       # (N_d, 1)
+            msum = (m * md).sum(-1)                       # (N_d, c)
+            scale = np.where(msum > 0, dsum / np.maximum(msum, 1e-300), 1.0)
+            scale = np.maximum(scale, 1.0)
+            upper = np.maximum(10.0, 10.0 * scale)        # (N_d, c)
+
+            lo = np.zeros_like(upper)
+            hi = upper.copy()
+            x1 = hi - GOLDEN_INV * (hi - lo)
+            x2 = lo + GOLDEN_INV * (hi - lo)
+            f1 = chi2_of(x1[..., None])
+            f2 = chi2_of(x2[..., None])
+            for _ in range(gs_iters):                     # golden section
+                go_left = f1 < f2
+                hi = np.where(go_left, x2, hi)
+                lo = np.where(go_left, lo, x1)
+                x2_new = np.where(go_left, x1, lo + GOLDEN_INV * (hi - lo))
+                x1_new = np.where(go_left, hi - GOLDEN_INV * (hi - lo), x2)
+                f2 = np.where(go_left, f1, chi2_of(x2_new[..., None]))
+                f1 = np.where(go_left, chi2_of(x1_new[..., None]), f2)
+                x1, x2 = x1_new, x2_new
+            Nb = 0.5 * (x1 + x2)
+            chi2 = chi2_of(Nb[..., None])
+            bad = Nb >= 0.999 * upper                     # scalar fn raises here
+            n_bound_hits += int(bad.sum())
+            chi2 = np.where(bad, np.nan, chi2)
+        else:
+            chi2 = chi2_of(1.0)
+
+        with np.errstate(invalid="ignore", divide="ignore"):
+            errs[:, s:e] = np.where(dof[:, None] > 0,
+                                    chi2 / dof[:, None], np.nan)
+
+    diag = {"n_valid": n_valid, "dof": dof, "n_bound_hits": n_bound_hits,
+            "frac_nan": float(np.isnan(errs).mean())}
+    return errs, diag
+
+
+# ----------------------------------------------------------------------
+# ranking / CMC
+# ----------------------------------------------------------------------
+
+def cmc_from_errs(errs, xs_d, nHs_d, xs_m, nHs_m, decimals=6):
+    xs_d = np.round(np.asarray(xs_d, float), decimals)
+    xs_m = np.round(np.asarray(xs_m, float), decimals)
+    nd = np.round(np.asarray(nHs_d, float), decimals)
+    nm = np.round(np.asarray(nHs_m, float), decimals)
+
+    order = np.argsort(errs, axis=0, kind="stable")   # NaN sorts last
+    key = {(x, n): i for i, (x, n) in enumerate(zip(xs_d, nd))}
+
+    N_m = errs.shape[1]
+    ranks = np.full(N_m, np.nan)
+    d_x = np.full(N_m, np.nan)
+    d_lognH = np.full(N_m, np.nan)
+    true_nan = 0
+
+    for j in range(N_m):
+        best = order[0, j]
+        d_x[j] = xs_d[best] - xs_m[j]
+        d_lognH[j] = np.log10(nd[best]) - np.log10(nm[j])
+        ti = key.get((xs_m[j], nm[j]))
+        if ti is None:
+            continue
+        if np.isnan(errs[ti, j]):
+            true_nan += 1
+            continue                                   # missing, not wrong
+        pos = np.nonzero(order[:, j] == ti)[0]
+        if pos.size:
+            ranks[j] = pos[0] + 1
+
+    fin = np.isfinite(ranks)
+    ks = np.arange(1, errs.shape[0] + 1)
+    cmc = np.array([(ranks[fin] <= k).mean() for k in ks]) if fin.any() \
+        else np.zeros(len(ks))
+    return {"ranks": ranks, "ks": ks, "cmc": cmc, "n_probes": int(fin.sum()),
+            "true_cell_nan": true_nan, "d_x": d_x, "d_lognH": d_lognH,
+            "errs": errs}
+
+
+def compute_cmc(model_npz, data_npz, *, n_annuli=24, bin_filter=10.0, use_N=False,
+        Fano_Data=1.0, Fano_Model=1.0, label="", show=True):
+    m, d = np.load(model_npz), np.load(data_npz)
+    mats_m, mats_d = m["mats"], d["mats"]
+    if mats_m.shape[-2:] != mats_d.shape[-2:]:
+        raise ValueError("image size mismatch")
+
+    H, W = mats_d.shape[-2:]
+    B, _ = annulus_matrix(H, W, n_annuli)
+    Sd, Sm = profiles(np.squeeze(mats_d), B), profiles(np.squeeze(mats_m), B)
+
+    errs, diag = chi2_matrix(Sd, Sm, bin_filter=bin_filter, use_N=use_N,
+                             Fano_Data=Fano_Data, Fano_Model=Fano_Model)
+    res = cmc_from_errs(errs, d["xs"], d["nHs"], m["xs"], m["nHs"])
+    res.update(diag)
+    res["label"] = label or model_npz
+
+    if show:
+        nv = diag["n_valid"]
+        print(f"valid annuli / {n_annuli}: min={nv.min()} med={int(np.median(nv))} "
+              f"max={nv.max()}")
+        if diag["n_bound_hits"]:
+            print(f"upper-bound hits (would RuntimeError): {diag['n_bound_hits']}")
+        if res["true_cell_nan"]:
+            print(f"true-cell NaN, excluded: {res['true_cell_nan']}")
+        for k in range(min(10, len(res["cmc"]))):
+            print(f"  Rank <= {k+1}: {res['cmc'][k]:.4f}")
+    return res
+
+
+def plot_cmc(results, max_rank=None, ax=None):
+    ax = ax or plt.subplots(figsize=(6, 4))[1]
+    for r in results:
+        k = max_rank or len(r["ks"])
+        ax.plot(r["ks"][:k], r["cmc"][:k], marker="o", ms=3,
+                label=f"{r['label']} (n={r['n_probes']})")
+    ax.set_xlabel("Rank $k$"); ax.set_ylabel("Identification rate")
+    ax.set_ylim(0, 1.02); ax.grid(True, ls="--", alpha=0.4); ax.legend(fontsize=8)
+    return ax
+
+
+def chi2_map(res, j, xs_d, nHs_d):
+    """Delta-chi2 surface for probe j on the (x, log nH) grid."""
+    xs_d = np.asarray(xs_d, float)
+    ln = np.log10(np.asarray(nHs_d, float))
+    xu, nu_ = np.unique(xs_d), np.unique(ln)
+    grid = np.full((len(nu_), len(xu)), np.nan)
+    col = res["errs"][:, j]
+    for i, (x, n) in enumerate(zip(xs_d, ln)):
+        grid[np.searchsorted(nu_, n), np.searchsorted(xu, x)] = col[i]
+    return grid - np.nanmin(grid), xu, nu_
+
+
+# ----------------------------------------------------------------------
+# verification against the scalar function
+# ----------------------------------------------------------------------
+
+def verify(ref_fn, model_npz, data_npz, *, n_pairs=40, seed=0, rtol=1e-9,
+           n_annuli=24, bin_filter=10.0, use_N=False,
+           Fano_Data=1.0, Fano_Model=1.0, pixel_scale_arcsec=43.2):
+    m, d = np.load(model_npz), np.load(data_npz)
+    mats_m, mats_d = np.squeeze(m["mats"]), np.squeeze(d["mats"])
+    H, W = mats_d.shape[-2:]
+    B, _ = annulus_matrix(H, W, n_annuli)
+    errs, _ = chi2_matrix(profiles(mats_d, B), profiles(mats_m, B),
+                          bin_filter=bin_filter, use_N=use_N,
+                          Fano_Data=Fano_Data, Fano_Model=Fano_Model)
+
+    rng = np.random.default_rng(seed)
+    ii = rng.integers(0, len(mats_d), n_pairs)
+    jj = rng.integers(0, len(mats_m), n_pairs)
+
+    bad = 0
+    for i, j in zip(ii, jj):
+        try:
+            ref = ref_fn(mats_d[i].astype(float), mats_m[j].astype(float),
+                         n_annuli=n_annuli, pixel_scale_arcsec=pixel_scale_arcsec,
+                         bin_filter=bin_filter, use_N=use_N,
+                         Fano_Data=Fano_Data, Fano_Model=Fano_Model)
+        except RuntimeError:
+            ref = np.nan
+        got = errs[i, j]
+        ok = (np.isnan(ref) and np.isnan(got)) or np.isclose(ref, got, rtol=rtol)
+        if not ok:
+            bad += 1
+            if bad <= 5:
+                print(f"  MISMATCH ({i},{j}): ref={ref:.10g} vec={got:.10g}")
+    print(f"{n_pairs - bad}/{n_pairs} match (rtol={rtol})")
+    return bad == 0
+
+
+"""
+Delta-chi2 identifiability maps.
+
+Column j of res["errs"] is the chi2_red of probe j against every gallery cell.
+Reshaped onto the (x, log nH) grid this is the identifiability surface.
+
+chi2_red is divided by a row-dependent dof (bin_filter is data-only), so it is
+converted back to absolute chi2 before contouring.  With two free parameters
+the joint levels are 2.30 / 6.17 / 11.83 (68 / 90 / 99 per cent), not 1/4/9.
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+LEVELS_2P = (2.30, 6.17, 11.83)
+
+
+def delta_map(res, xs_d, nHs_d, j, reduced=True):
+    """Returns (dchi2 grid [n_nH, n_x], x axis, log nH axis, truth, best)."""
+    xs_d = np.asarray(xs_d, float)
+    ln_d = np.log10(np.asarray(nHs_d, float))
+    xu, nu_ = np.unique(xs_d), np.unique(ln_d)
+
+    col = res["errs"][:, j]
+    if not reduced:
+        col = col * res["dof"]          # chi2_red -> absolute chi2
+
+    grid = np.full((len(nu_), len(xu)), np.nan)
+    for i, (x, n) in enumerate(zip(xs_d, ln_d)):
+        grid[np.searchsorted(nu_, n), np.searchsorted(xu, x)] = col[i]
+
+    best = int(np.nanargmin(col))
+    return grid - np.nanmin(grid), xu, nu_, (xs_d[best], ln_d[best])
+
+
+def _draw_cell_corners(ax, ix, iy, color, half=0.5, lw=2.2, zorder=8):
+    """
+    Draw a solid rectangle outline (all four sides) around the categorical
+    grid cell centred at (ix, iy).
+    """
+    from matplotlib.patches import Rectangle
+
+    ax.add_patch(Rectangle(
+        (ix - half, iy - half), 2 * half, 2 * half,
+        fill=False, edgecolor=color, linewidth=lw,
+        linestyle="-", zorder=zorder,
+    ))
+
+
+def _print_chi2_pair_details(label_data, mat_data, label_model, mat_model, *,
+                              n_annuli=24, pixel_scale_arcsec=45.0, bin_filter=10.0,
+                              Fano_Data=1.0, Fano_Model=1.0, use_N=False,
+                              show_bin_contributions=True):
+    """
+    Print the same pairwise chi2 computation detail block that
+    compare_npz_by_params / _compare_matrices prints (header, both chi2_red
+    directions with N_best, an optional per-annulus contributions table,
+    and the mean/summary lines), but scoped to a single (data, model) pair.
+
+    use_N must match whatever setting built the res grid these matches were
+    ranked from (compute_cmc defaults to use_N=False, i.e. N fixed at 1) --
+    otherwise the printed chi2_red values are a different statistic than
+    the one that produced the rank order, and won't be monotonic in rank.
+
+    Returns (val_ij, N_best_ij, val_ji, N_best_ji), where the "_ij" values
+    treat label_data as data (label_model as the fitted model), and the
+    "_ji" values treat label_model as data instead.
+    """
+    mat_data = np.asarray(mat_data, dtype=np.float64)
+    mat_model = np.asarray(mat_model, dtype=np.float64)
+    if mat_data.shape != mat_model.shape:
+        raise ValueError(
+            f"Shape mismatch: data {mat_data.shape} vs model {mat_model.shape}"
+        )
+
+    metric_label = "chi2_red"
+    print(f"\nPairwise {metric_label} (chi2):")
+    print(f"  n_annuli={n_annuli}, bin_filter={bin_filter}, Fano Data={Fano_Data}, "
+          f"Fano Model={Fano_Model}, pixel_scale={pixel_scale_arcsec}\", use_N={use_N}")
+    print("-" * 55)
+
+    val_ij, contrib_ij, dof_ij, summary_str_ij, helper_ij = _call_chi2_pair(
+        mat_data, mat_model, V=None,
+        n_annuli=n_annuli, pixel_scale_arcsec=pixel_scale_arcsec,
+        bin_filter=bin_filter, need_contributions=show_bin_contributions,
+        Fano_Data=Fano_Data, Fano_Model=Fano_Model, use_N=use_N,
+    )
+    val_ji, contrib_ji, dof_ji, summary_str_ji, helper_ji = _call_chi2_pair(
+        mat_model, mat_data, V=None,
+        n_annuli=n_annuli, pixel_scale_arcsec=pixel_scale_arcsec,
+        bin_filter=bin_filter, need_contributions=show_bin_contributions,
+        Fano_Data=Fano_Data, Fano_Model=Fano_Model, use_N=use_N,
+    )
+    N_best_ij = float(helper_ij[3])
+    N_best_ji = float(helper_ji[3])
+
+    print(f"  {label_data} vs {label_model}")
+    print(f"    {metric_label} ({label_data} as data) = {val_ij:.4f}   {summary_str_ij}")
+    print(f"    {metric_label} ({label_model} as data) = {val_ji:.4f}   {summary_str_ji}")
+
+    if show_bin_contributions:
+        # Radial geometry + raw annulus sums, matching _compare_matrices.
+        H, W = mat_data.shape
+        yy, xx = np.indices((H, W))
+        cy, cx = (H - 1) / 2.0, (W - 1) / 2.0
+        rr = np.sqrt((yy - cy) ** 2 + (xx - cx) ** 2)
+        edges_pix = np.linspace(0.0, rr.max(), n_annuli + 1)
+        bins = np.clip(np.digitize(rr.ravel(), edges_pix) - 1, 0, n_annuli - 1)
+        bin_centers_pix = 0.5 * (edges_pix[:-1] + edges_pix[1:])
+        bin_centers_arc = bin_centers_pix * pixel_scale_arcsec
+        N_pixels = np.bincount(bins, minlength=n_annuli).astype(np.float64)
+        area_bin = N_pixels * (pixel_scale_arcsec ** 2)
+
+        def _radial_sum(arr):
+            return np.bincount(bins, weights=np.nan_to_num(arr.ravel()), minlength=n_annuli)
+
+        S_data = _radial_sum(mat_data)
+        S_model = _radial_sum(mat_model)
+        red_contrib_ij = contrib_ij / float(dof_ij)
+        red_contrib_ji = contrib_ji / float(dof_ji)
+
+        print(f"    per-annulus reduced {metric_label} contributions:")
+        print(
+            "      bin | radius[arcsec] | area[arcsec^2] | "
+            f"counts({label_data}) | counts({label_model}) | "
+            f"{label_data}->{label_model} | {label_model}->{label_data}"
+        )
+        for b in range(n_annuli):
+            print(
+                f"      {b+1:>3d} | {bin_centers_arc[b]:>13.3f} | {area_bin[b]:>13.3f} | "
+                f"{float(S_data[b]):>12.3f} | {float(S_model[b]):>13.3f} | "
+                f"{red_contrib_ij[b]:>11.4e} | {red_contrib_ji[b]:>11.4e}"
+            )
+
+    pair_mean = 0.5 * (val_ij + val_ji)
+    print(f"  Mean {metric_label} (all pairs, both directions) = {pair_mean:.4f} ± 0.0000")
+    print(f"  Mean {metric_label} (model fit to reference '{label_model}' as data) = "
+          f"{val_ji:.4f} ± 0.0000")
+    print(f"  Pairwise {metric_label} summary (mean of both directions):")
+    print(f"    {label_data} x {label_model} = {pair_mean:.4f}")
+    print("-" * 55)
+
+    return val_ij, N_best_ij, val_ji, N_best_ji
+
+
+def plot_map(res, xs_d, nHs_d, xs_m, nHs_m, j, ax=None, reduced=True,
+             top_k=5, vmax=None, vcenter=1.0, cmap="RdBu_r",
+             tick_stride=1, x_display_scale=1e-4, figsize=(5, 4),
+             annotate=True, model_npz=None, data_npz=None,
+             n_annuli=24, bin_filter=10.0, Fano_Data=1.0, Fano_Model=1.0,
+             pixel_scale_arcsec=45.0, use_N=False, show_bin_contributions=True):
+    """
+    Same journal heatmap style as error_heatmap_between_npz(diverging=True):
+    imshow with origin="upper", aspect="auto", nearest interpolation, the
+    diverging RdBu_r colour map (error_heatmap_between_npz's diverging=True
+    default), and categorical (x, N_H) tick labels -- rather than
+    pcolormesh on continuous axes.
+
+    The colour bar shows Delta-chi2 (relative to the best-fit cell for this
+    probe; Delta-chi2_red if reduced=True), diverging around vcenter (1.0 by
+    default -- the white midpoint of the colour bar) -- so cells above and
+    below that value read as opposite colours.
+
+    When annotate=True (default), the top_k matched cells are labelled in
+    bright green with their match rank, and each gets a bright green
+    cell-border outline. When annotate=False, only the closest match is
+    shown (bright green cell-border outline, no number), and the (x, nH)
+    and chi2 of both cells are printed: the "self match" (chi2 of the
+    probe's true cell against itself) and the "best match" (chi2 of the
+    closest cell).
+
+    Either way, the probe's true parameter cell always gets a red
+    cell-border outline, drawn on top -- so if it coincides with a match,
+    it still reads as red.
+
+    If model_npz and data_npz are both given (the same archives res was
+    built from), the full pairwise chi2 computation detail block is
+    printed for every annotated match -- the same format
+    compare_npz_by_params / _compare_matrices prints: a header, chi2_red
+    (with N_best) in both directions, an optional per-annulus
+    contributions table (show_bin_contributions), and the mean/summary
+    lines -- computed directly from the actual (data, model) matrices via
+    radial_reduced_chi2_area2_bin_filtered. n_annuli, bin_filter,
+    Fano_Data, Fano_Model, and pixel_scale_arcsec control that computation
+    (independent of whatever settings built res -- pass the same values
+    you used there to match).
+
+    use_N must match whatever setting built res (compute_cmc defaults to
+    use_N=False, i.e. N fixed at 1 -- so this defaults to False too). If
+    it doesn't match, the printed chi2_red values are a different
+    statistic than the one that produced the rank order, and won't be
+    monotonic in rank.
+    """
+    d, xu, nu_, best = delta_map(res, xs_d, nHs_d, j, reduced=reduced)
+
+    with plt.rc_context(JOURNAL_RC):
+        if ax is None:
+            _, ax = plt.subplots(figsize=figsize)
+        fig = ax.figure
+
+        vmax_eff = vmax or np.nanpercentile(d, 90)
+        vmax_eff = max(vmax_eff, vcenter * 1.01)   # keep vmin<vcenter<vmax
+        norm = TwoSlopeNorm(vmin=0.0, vcenter=vcenter, vmax=vmax_eff)
+
+        im = ax.imshow(d, origin="upper", aspect="auto", cmap=cmap,
+                       norm=norm, interpolation="nearest")
+
+        # If annotate=True, label each of the top_k matched cells (ranked by
+        # chi2 against probe j) with its match rank in bright green, and
+        # give each one a bright green cell-border outline. If
+        # annotate=False, only the closest match gets the bright green
+        # cell-border outline (no number). Either way, the probe's true
+        # parameter cell always gets a red cell-border outline, drawn last
+        # so it reads as red even if it coincides with a match.
+        MATCH_COLOR = "lime"   # bright green
+        PROBE_COLOR = "red"
+
+        xs_d_arr = np.asarray(xs_d, float)
+        nHs_d_arr = np.asarray(nHs_d, float)
+        ln_d = np.log10(nHs_d_arr)
+        col = res["errs"][:, j]
+        order = np.argsort(col, kind="stable")     # NaN sorts last
+
+        x_true = float(np.asarray(xs_m, float)[j])
+        nH_true = float(np.asarray(nHs_m, float)[j])
+        n_true = float(np.log10(nH_true))
+        ix_true = np.searchsorted(xu, x_true)
+        iy_true = np.searchsorted(nu_, n_true)
+
+        key = {
+            (round(float(x), 6), round(float(n), 6)): i
+            for i, (x, n) in enumerate(zip(xs_d_arr, nHs_d_arr))
+        }
+        true_i = key.get((round(x_true, 6), round(nH_true, 6)))
+        best_i = int(order[0]) if order.size and np.isfinite(col[order[0]]) else None
+
+        if annotate:
+            for rank, i in enumerate(order[:top_k], start=1):
+                if not np.isfinite(col[i]):
+                    break
+                ix = np.searchsorted(xu, xs_d_arr[i])
+                iy = np.searchsorted(nu_, ln_d[i])
+                _draw_cell_corners(ax, ix, iy, color=MATCH_COLOR, zorder=5)
+                ax.annotate(str(rank), (ix, iy), color=MATCH_COLOR, ha="center",
+                            va="center", fontsize=10, fontweight="bold", zorder=6)
+        else:
+            if best_i is not None:
+                ix = np.searchsorted(xu, xs_d_arr[best_i])
+                iy = np.searchsorted(nu_, ln_d[best_i])
+                _draw_cell_corners(ax, ix, iy, color=MATCH_COLOR, zorder=6)
+
+            # Print the true (self) cell's chi2 and the closest match's
+            # chi2, each with their (x, nH).
+            x_true_disp = x_true * x_display_scale
+            if true_i is not None:
+                print(f"self match   x={x_true_disp:.4g}  nH={nH_true:.3e}  "
+                      f"chi2={col[true_i]:.4g}")
+            else:
+                print(f"self match   x={x_true_disp:.4g}  nH={nH_true:.3e}  "
+                      f"chi2=n/a (not present in data grid)")
+
+            if best_i is not None:
+                print(f"best match   x={xs_d_arr[best_i] * x_display_scale:.4g}  "
+                      f"nH={nHs_d_arr[best_i]:.3e}  chi2={col[best_i]:.4g}")
+            else:
+                print("best match   none (all chi2 are NaN)")
+
+        # Optional: print the full pairwise chi2 computation detail block
+        # (same format as compare_npz_by_params / _compare_matrices) for
+        # every annotated match, computed directly from the actual matrix
+        # data. Only runs if both archives are given.
+        if model_npz is not None and data_npz is not None:
+            targets = (
+                [(rank, i) for rank, i in enumerate(order[:top_k], start=1)
+                 if np.isfinite(col[i])]
+                if annotate
+                else ([(1, best_i)] if best_i is not None else [])
+            )
+            if targets:
+                with np.load(model_npz) as m_arc, np.load(data_npz) as d_arc:
+                    xs_m_arr = np.round(m_arc["xs"].astype(float), 6)
+                    nHs_m_arr = np.round(m_arc["nHs"].astype(float), 6)
+                    mats_m_arr = m_arc["mats"]
+                    xs_d_arr2 = np.round(d_arc["xs"].astype(float), 6)
+                    nHs_d_arr2 = np.round(d_arc["nHs"].astype(float), 6)
+                    mats_d_arr = d_arc["mats"]
+
+                    model_key = {
+                        (x, n): idx for idx, (x, n) in enumerate(zip(xs_m_arr, nHs_m_arr))
+                    }
+                    data_key = {
+                        (x, n): idx for idx, (x, n) in enumerate(zip(xs_d_arr2, nHs_d_arr2))
+                    }
+
+                    m_idx = model_key.get((round(x_true, 6), round(nH_true, 6)))
+                    if m_idx is None:
+                        print(f"chi2 details: probe (x={x_true * x_display_scale:.4g}, "
+                              f"nH={nH_true:.3e}) not found in {model_npz}; skipping.")
+                    else:
+                        model_mat = np.squeeze(np.asarray(mats_m_arr[m_idx], dtype=np.float64))
+                        label_model = (
+                            f"probe(x={x_true * x_display_scale:.4g}, nH={nH_true:.3e})"
+                        )
+
+                        probe_as_data = []   # (rank, chi2_red, N_best), probe as data
+                        for rank, i in targets:
+                            xd = float(xs_d_arr[i])
+                            nHd = float(nHs_d_arr[i])
+                            d_idx = data_key.get((round(xd, 6), round(nHd, 6)))
+                            if d_idx is None:
+                                print(f"chi2 details: match rank {rank} "
+                                      f"(x={xd * x_display_scale:.4g}, nH={nHd:.3e}) "
+                                      f"not found in {data_npz}; skipping.")
+                                continue
+                            data_mat = np.squeeze(
+                                np.asarray(mats_d_arr[d_idx], dtype=np.float64)
+                            )
+                            label_data = (
+                                f"rank{rank}(x={xd * x_display_scale:.4g}, nH={nHd:.3e})"
+                            )
+                            try:
+                                _, _, val_ji, N_best_ji = _print_chi2_pair_details(
+                                    label_data, data_mat, label_model, model_mat,
+                                    n_annuli=n_annuli,
+                                    pixel_scale_arcsec=pixel_scale_arcsec,
+                                    bin_filter=bin_filter,
+                                    Fano_Data=Fano_Data, Fano_Model=Fano_Model,
+                                    use_N=use_N,
+                                    show_bin_contributions=show_bin_contributions,
+                                )
+                                probe_as_data.append((rank, val_ji, N_best_ji))
+                            except RuntimeError as exc:
+                                print(f"chi2 details: match rank {rank} "
+                                      f"(x={xd * x_display_scale:.4g}, nH={nHd:.3e})   "
+                                      f"chi2 computation failed: {exc}")
+
+                        if probe_as_data:
+                            print(f"\nProbe as data ({label_model}) -- chi2_red and N_best "
+                                  f"per rank:")
+                            for rank, chi2_val, N_best in probe_as_data:
+                                print(f"  rank {rank}: chi2_red={chi2_val:.4f}   "
+                                      f"N_best={N_best:.4f}")
+
+        _draw_cell_corners(ax, ix_true, iy_true, color=PROBE_COLOR, zorder=7)
+
+        xticks = np.arange(len(xu))
+        yticks = np.arange(len(nu_))
+        ax.set_xticks(xticks[::tick_stride])
+        ax.set_xticklabels([f"{v * x_display_scale:.4f}" for v in xu[::tick_stride]],
+                           rotation=45, ha="right", fontsize=10)
+        ax.set_yticks(yticks[::tick_stride])
+        ax.set_yticklabels([_latex_sci(10.0 ** v) for v in nu_[::tick_stride]],
+                           fontsize=10)
+
+        # Categorical tick positions: keep frame, drop tick marks.
+        ax.tick_params(axis="both", which="both", length=0)
+
+        ax.set_xlabel("$x$")
+        ax.set_ylabel(r"$N_\mathrm{H}$ [cm$^{-2}$]")
+
+        ax.set_title(
+            rf"$\Delta\chi^2$ Heatmap for $x=${x_true * x_display_scale:.4g} "
+            rf"and $N_H=${nH_true:.3e}",
+            fontsize=9, pad=8,
+        )
+
+        extend = "max" if np.nanmax(d) > vmax_eff else "neither"
+        cbar = fig.colorbar(im, ax=ax, pad=0.02, extend=extend)
+        cbar.set_label(r"$\Delta\chi^2_{\mathrm{red}}$" if reduced
+                       else r"$\Delta\chi^2$")
+        cbar.ax.tick_params(direction="in", length=3)
+        cbar.outline.set_linewidth(0.8)
+
+        ticks = cbar.get_ticks()
+        if vcenter not in ticks:
+            ticks = np.sort(np.append(ticks, vcenter))
+        cbar.set_ticks(ticks[(ticks >= 0.0) & (ticks <= vmax_eff)])
+
+    return ax, im
+
+
+def panel(res, xs_d, nHs_d, xs_m, nHs_m, js, ncol=3, figsize=None, **kw):
+    # Each plot_map call now draws its own colour bar, so no shared one is
+    # added here (that would duplicate it).
+    n = len(js)
+    nrow = int(np.ceil(n / ncol))
+    fig, axes = plt.subplots(nrow, ncol,
+                             figsize=figsize or (4.2 * ncol, 3.4 * nrow),
+                             squeeze=False)
+    for ax, j in zip(axes.ravel(), js):
+        plot_map(res, xs_d, nHs_d, xs_m, nHs_m, j, ax=ax, **kw)
+    for ax in axes.ravel()[n:]:
+        ax.axis("off")
+    return fig
+
+
+def credible_area(res, xs_d, nHs_d, level=LEVELS_2P[0]):
+    """
+    Per-probe count of grid cells inside the Delta-chi2 < level region.
+    Smaller = sharper constraint.  This is the scalar that replaces rank when
+    the grid is too coarse for rank-1 to be meaningful.
+    """
+    out = np.full(res["errs"].shape[1], np.nan)
+    for j in range(res["errs"].shape[1]):
+        d, *_ = delta_map(res, xs_d, nHs_d, j)
+        out[j] = np.nansum(d < level)
+    return out
+
+
+# ----------------------------------------------------------------------
+# aggregate views over all probes
+# ----------------------------------------------------------------------
+
+def mean_recentred_map(res, xs_d, nHs_d, xs_m, nHs_m, min_count=10):
+    """
+    Shift every probe's Delta-chi2 map so its TRUE cell sits at the centre,
+    then average.  Result is in relative coordinates (dx, dlog nH) and shows
+    the typical shape of the chi2 well.
+
+    Cells far from the centre are averaged over fewer probes (edge effects);
+    those with fewer than min_count contributions are masked out.
+
+    Returns (mean_map, dx_axis, dlognH_axis, count_map).
+    """
+    xs_d = np.asarray(xs_d, float)
+    ln_d = np.log10(np.asarray(nHs_d, float))
+    xs_m = np.asarray(xs_m, float)
+    ln_m = np.log10(np.asarray(nHs_m, float))
+
+    xu, nu_ = np.unique(xs_d), np.unique(ln_d)
+    nx, nn = len(xu), len(nu_)
+    n_probes = res["errs"].shape[1]
+
+    stack = np.full((n_probes, 2 * nn - 1, 2 * nx - 1), np.nan)
+    for j in range(n_probes):
+        g, *_ = delta_map(res, xs_d, nHs_d, j)               # (nn, nx)
+        iy = int(np.searchsorted(nu_, ln_m[j]))
+        ix = int(np.searchsorted(xu, xs_m[j]))
+        stack[j, (nn - 1 - iy):(2 * nn - 1 - iy),
+                 (nx - 1 - ix):(2 * nx - 1 - ix)] = g
+
+    count = np.sum(~np.isnan(stack), axis=0)
+    with np.errstate(invalid="ignore"):
+        mean = np.nanmean(stack, axis=0)
+    mean[count < min_count] = np.nan
+
+    dx = np.concatenate([-xu[::-1][:-1] + xu[0], xu - xu[0]])
+    dx = (np.arange(2 * nx - 1) - (nx - 1)) * np.median(np.diff(xu))
+    dn = (np.arange(2 * nn - 1) - (nn - 1)) * np.median(np.diff(nu_))
+    return mean, dx, dn, count
+
+
+def plot_mean_map(res, xs_d, nHs_d, xs_m, nHs_m, ax=None, log=True, **kw):
+    mean, dx, dn, _ = mean_recentred_map(res, xs_d, nHs_d, xs_m, nHs_m, **kw)
+    ax = ax or plt.subplots(figsize=(5, 4))[1]
+    z = np.log10(1 + mean) if log else mean
+    im = ax.pcolormesh(dx, dn, z, shading="nearest", cmap="viridis_r")
+    ax.plot(0, 0, "r+", ms=14, mew=2.2)
+    ax.set_xlabel(r"$\Delta x$")
+    ax.set_ylabel(r"$\Delta \log_{10} N_{\rm H}$")
+    ax.set_title(res.get("label", ""), fontsize=10)
+    plt.colorbar(im, ax=ax,
+                 label=r"$\log_{10}(1+\overline{\Delta\chi^2})$" if log
+                       else r"$\overline{\Delta\chi^2}$")
+    return ax
+
+
+def grid_scalar(res, xs_m, nHs_m, values=None):
+    """
+    Put one number per probe back onto the (x, log nH) grid.
+    Default is the rank of the true cell -- shows WHERE in parameter space
+    identification is hard.  Pass values= for offsets, well width, etc.
+    Returns (grid, x_axis, lognH_axis).
+    """
+    xs_m = np.asarray(xs_m, float)
+    ln_m = np.log10(np.asarray(nHs_m, float))
+    v = res["ranks"] if values is None else np.asarray(values, float)
+
+    xu, nu_ = np.unique(xs_m), np.unique(ln_m)
+    grid = np.full((len(nu_), len(xu)), np.nan)
+    for j, (x, n) in enumerate(zip(xs_m, ln_m)):
+        grid[np.searchsorted(nu_, n), np.searchsorted(xu, x)] = v[j]
+    return grid, xu, nu_
+
+
+def plot_grid_scalar(res, xs_m, nHs_m, values=None, ax=None, label="rank",
+                     log=True, cmap="magma_r"):
+    grid, xu, nu_ = grid_scalar(res, xs_m, nHs_m, values=values)
+    ax = ax or plt.subplots(figsize=(5, 4))[1]
+    z = np.log10(grid) if log else grid
+    im = ax.pcolormesh(xu, nu_, z, shading="nearest", cmap=cmap)
+    ax.set_xlabel("$x$")
+    ax.set_ylabel(r"$\log_{10}\,N_{\rm H}$")
+    ax.set_title(f"{res.get('label','')} — {label}", fontsize=10)
+    plt.colorbar(im, ax=ax, label=f"log10 {label}" if log else label)
+    return ax

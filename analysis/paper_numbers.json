@@ -1,0 +1,178 @@
+{
+ "multiple_scattering_heatmap": {
+  "mean": 1.8819925203652172,
+  "std": 1.1384624961164713,
+  "max": 7.3241267237480185
+ },
+ "appA_x_3319_0_nH_1e_22.png": [
+  "Pairwise D_red (N-normalized Poisson deviance):",
+  "D_red (Single Scattering as data) = 1.9319   dof=19   N-normalized; data counts > 0; fitted per pair, N=0.8501",
+  "D_red (Multiple Scattering as data) = 1.9822   dof=21   N-normalized; data counts > 0; fitted per pair, N=1.178",
+  "per-annulus reduced D_red contributions:",
+  "Mean D_red (all pairs, both directions) = 1.9570 \u00b1 0.0000",
+  "Mean D_red (absolute comparison with reference 'Multiple Scattering') = 1.9822 \u00b1 0.0000",
+  "Pairwise D_red summary (mean of both directions):"
+ ],
+ "appA_x_4506_0_nH_2_44e_22.png": [
+  "Pairwise D_red (N-normalized Poisson deviance):",
+  "D_red (Single Scattering as data) = 2.1079   dof=18   N-normalized; data counts > 0; fitted per pair, N=0.8204",
+  "D_red (Multiple Scattering as data) = 2.2482   dof=19   N-normalized; data counts > 0; fitted per pair, N=1.226",
+  "per-annulus reduced D_red contributions:",
+  "Mean D_red (all pairs, both directions) = 2.1780 \u00b1 0.0000",
+  "Mean D_red (absolute comparison with reference 'Multiple Scattering') = 2.2482 \u00b1 0.0000",
+  "Pairwise D_red summary (mean of both directions):"
+ ],
+ "appA_x_2429_0_nH_5_12e_22.png": [
+  "Pairwise D_red (N-normalized Poisson deviance):",
+  "D_red (Single Scattering as data) = 5.4385   dof=9   N-normalized; data counts > 0; fitted per pair, N=0.7825",
+  "D_red (Multiple Scattering as data) = 4.8696   dof=11   N-normalized; data counts > 0; fitted per pair, N=1.282",
+  "per-annulus reduced D_red contributions:",
+  "Mean D_red (all pairs, both directions) = 5.1541 \u00b1 0.0000",
+  "Mean D_red (absolute comparison with reference 'Multiple Scattering') = 4.8696 \u00b1 0.0000",
+  "Pairwise D_red summary (mean of both directions):"
+ ],
+ "noise_floor_heatmap": {
+  "mean": 1.019407103453167,
+  "std": 0.37723383566994406,
+  "max": 2.6855672770356573
+ },
+ "mean_DP_per_checkpoint": {
+  "A": {
+   "1": 86053.94527056337,
+   "2": 78071.18802511752,
+   "3": 69085.88546133097,
+   "4": 760.581557197779,
+   "5": 415.5381047265277,
+   "6": 149.37301680955838,
+   "7": 128.14256827721982,
+   "8": 84.73056631920956,
+   "9": 178.89191620823718,
+   "10": 68.95102625966652,
+   "11": 52.47371963836583,
+   "12": 77.34202291896673,
+   "13": 44.13673640259884,
+   "14": 41.2926516007307,
+   "15": 49.327345022907025,
+   "16": 33.37358765564224,
+   "17": 33.263250391562195,
+   "18": 23.99311197980652,
+   "19": 14.31323683654452,
+   "20": 27.64342863226735
+  },
+  "B": {
+   "1": 50839.982019119525,
+   "2": 48804.276875934054,
+   "3": 45750.231622663276,
+   "4": 577.6496340961327,
+   "5": 8.701673904969326,
+   "6": 6.398394856348633,
+   "7": 5.458095324795991,
+   "8": 4.156411875656272,
+   "9": 2.7305892293605534,
+   "10": 3.055782491129339,
+   "11": 4.351079170795472,
+   "12": 3.5058539434880984,
+   "13": 2.0950242482746257,
+   "14": 2.2703138463458026,
+   "15": 2.359133758473271,
+   "16": 2.1864654784035036,
+   "17": 2.636769475907984,
+   "18": 2.5148426499505088,
+   "19": 2.2076382095439073,
+   "20": 2.460738177438896
+  },
+  "C": {
+   "1": 49664.2244054849,
+   "2": 311.3272713410034,
+   "3": 144.2381737266274,
+   "4": 6.1572529871061,
+   "5": 3.9754096894846294,
+   "6": 3.9513453155406073,
+   "7": 2.1087228718338595,
+   "8": 3.604301484647311,
+   "9": 2.0550213260049603,
+   "10": 2.276844172444461,
+   "11": 2.1831309011300486,
+   "12": 2.2493225606412843,
+   "13": 1.8241592174317238,
+   "14": 2.4788480688818586,
+   "15": 1.4842615403604238,
+   "16": 2.1889693727271293,
+   "17": 1.9281729218933938,
+   "18": 1.944725384905004,
+   "19": 2.010057304211513,
+   "20": 2.0639749937185994
+  }
+ },
+ "table2": {
+  "A": {
+   "selected_epoch": 19000,
+   "mean_DP": 14.31323683654452
+  },
+  "B": {
+   "selected_epoch": 13000,
+   "mean_DP": 2.0950242482746257
+  },
+  "C": {
+   "selected_epoch": 15000,
+   "mean_DP": 1.4842615403604238
+  }
+ },
+ "heatmap_B": {
+  "mean": 2.0950242482746257,
+  "std": 3.4619735236432834,
+  "max": 31.10109234907936
+ },
+ "heatmap_C": {
+  "mean": 1.4842615403604236,
+  "std": 2.917095275979331,
+  "max": 31.535776001513096
+ },
+ "chi2_red": {
+  "A": 9.440104537285118,
+  "B": 2.021422658373438,
+  "C": 1.4871621000043718
+ },
+ "fig10": [
+  "Pairwise D_red (absolute Poisson deviance):",
+  "D_red (Model A as data) = 7.6457   dof=24   absolute; data counts > 0; no fitted normalization",
+  "D_red (Model C as data) = 7.6457   dof=24   absolute; data counts > 0; no fitted normalization",
+  "per-annulus reduced D_red contributions:",
+  "D_red (Model A as data) = 12.1368   dof=24   absolute; data counts > 0; no fitted normalization",
+  "D_red (RefleX as data) = 14.0515   dof=20   absolute; data counts > 0; no fitted normalization",
+  "per-annulus reduced D_red contributions:",
+  "D_red (Model C as data) = 1.6083   dof=24   absolute; data counts > 0; no fitted normalization",
+  "D_red (RefleX as data) = 1.8752   dof=20   absolute; data counts > 0; no fitted normalization",
+  "per-annulus reduced D_red contributions:",
+  "Mean D_red (all pairs, both directions) = 7.4939 \u00b1 4.6358",
+  "Mean D_red (absolute comparison with reference 'RefleX') = 7.9634 \u00b1 6.0882",
+  "Pairwise D_red summary (mean of both directions):"
+ ],
+ "appC_1": [
+  "Pairwise D_red (absolute Poisson deviance):",
+  "D_red (Model C as data) = 1.6083   dof=24   absolute; data counts > 0; no fitted normalization",
+  "D_red (RefleX as data) = 1.8752   dof=20   absolute; data counts > 0; no fitted normalization",
+  "per-annulus reduced D_red contributions:",
+  "Mean D_red (all pairs, both directions) = 1.7418 \u00b1 0.0000",
+  "Mean D_red (absolute comparison with reference 'RefleX') = 1.8752 \u00b1 0.0000",
+  "Pairwise D_red summary (mean of both directions):"
+ ],
+ "appC_2": [
+  "Pairwise D_red (absolute Poisson deviance):",
+  "D_red (Model C as data) = 3.2018   dof=24   absolute; data counts > 0; no fitted normalization",
+  "D_red (RefleX as data) = 1.8179   dof=14   absolute; data counts > 0; no fitted normalization",
+  "per-annulus reduced D_red contributions:",
+  "Mean D_red (all pairs, both directions) = 2.5098 \u00b1 0.0000",
+  "Mean D_red (absolute comparison with reference 'RefleX') = 1.8179 \u00b1 0.0000",
+  "Pairwise D_red summary (mean of both directions):"
+ ],
+ "appC_3": [
+  "Pairwise D_red (absolute Poisson deviance):",
+  "D_red (Model C as data) = 0.9909   dof=18   absolute; bin_filter=10; no fitted normalization",
+  "D_red (RefleX as data) = 0.8056   dof=17   absolute; bin_filter=10; no fitted normalization",
+  "per-annulus reduced D_red contributions:",
+  "Mean D_red (all pairs, both directions) = 0.8982 \u00b1 0.0000",
+  "Mean D_red (absolute comparison with reference 'RefleX') = 0.8056 \u00b1 0.0000",
+  "Pairwise D_red summary (mean of both directions):"
+ ]
+}
